@@ -1,0 +1,362 @@
+#+TITLE: Experiments With Haskell And Music
+#+AUTHOR: Gabriel G. de Brito
+
+These are some experiments I made with Haskell aiming in raw sound
+generation via a music description. As a musician can read sheet music
+and play music as descripted, here I wish to write a description of
+the music and the computer plays.
+
+This is possible because music is math, and to play music is to
+compute the combination of waves necessary to generate the desired
+sound.
+
+This was inspired by [[https://youtu.be/FYTZkE5BZ-0][this video]], with some code borrowed. The same
+license applies, on the name of Alexey Kutepov. His repository is
+acessible [[https://github.com/tsoding/haskell-music][here]].
+
+** License
+
+Code of my (Gabriel G. de Brito) authorship in this repository is
+licensed under the =MIT= license, as described in the file ~LICENSE~. Code
+of authorship of Alexey Kutepov is licensed under the same terms.
+
+** Imports/Module
+
+#+begin_src haskell :tangle TheNutcracker.hs
+module TheNutcracker where
+
+import Data.Foldable
+import qualified Data.ByteString.Lazy as B
+import qualified Data.ByteString.Builder as B
+#+end_src
+
+** Typing
+
+We start creating some usefull types. This is just for the sake of
+code redability, as almost every type is just =Float= or a derivation
+of.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+type Pulse      = Float
+type Hz         = Float
+type Seconds    = Float
+type Semitones  = Float
+type Beats      = Float
+type Volume     = Float
+type SampleRate = Float
+type BPM        = Beats
+type Wave       = [Pulse]
+type Tone       = (String,Float)
+#+end_src
+
+** Beat Duration And Sample Rate
+
+Given a BPM, the duration of a beat is, of course, 60/BPM.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+beatDuration :: BPM -> Seconds
+beatDuration bpm = 60.0 / bpm
+#+end_src
+
+And the sample rate arrives from the impossibility of expressing
+functions as a list, in the sense of, it's impossible to compute every
+single possibility of a function with an infinite input set. So, in a
+wave expressed in a computer, every value is a sample, and the sample
+rate is the quantity of samples that should have the duration of a
+second. Given that, we need a step to multiply and compose with the
+~sin~ function when generating the wave.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+getStepFromSampleRate :: SampleRate -> Hz -> Pulse
+getStepFromSampleRate sr freq = (freq * 2 * pi) / sr
+#+end_src
+
+** Volume And Compression
+
+Applying volume to a wave is nothing but multiplying every value, as
+the volume is the amplitude of the wave.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+applyVolume :: Volume -> Wave -> Wave
+applyVolume vol = map (* vol)
+
+mapApplyVolume :: Volume -> [Wave] -> [Wave]
+mapApplyVolume vol = map (applyVolume vol)
+#+end_src
+
+And the idea of compression is raising gradually the volume of the
+note in the beggining, and them lowering it gradually in the end. With
+that, we can generate sequences of notes easily distinguishable for
+the human ears. With that, sequences of the same note will not seem as
+the same note sustained.
+
+The formula is based on the formula used by Mr. Kutepov. This differs
+as he merged together the formula for computing every aspect of the
+wave, and I separated them in their own functions. This way, we allow
+notes without compression.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+applyCompression :: Float -> Wave -> Wave
+applyCompression amt out = zipWith3 (\x y z -> x * y * z) atk out rel
+  where
+    atk = map (min 1.0) [0.0, amt ..]
+    rel = reverse $ take (length out) atk
+
+mapApplyCompression :: Float -> [Wave] -> [Wave]
+mapApplyCompression amt = map (applyCompression amt)
+#+end_src
+
+** Generating Waves
+
+Waves can be generated using the ~sin~ function and the sample rate. We
+also need, of course, to know the duration and frequency of the
+wave. Most of this is also extracted from the function that
+Mr. Kutepov wrote.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+wave :: Hz -> Seconds -> SampleRate -> Wave
+wave freq dur sr = map (sin . (* stp)) [0.0..sr * dur]
+  where
+    stp = getStepFromSampleRate sr freq
+#+end_src
+
+The following generates a list of waves from a list of pairs of
+frequencies (Hz) and time (Seconds), all with the same sample
+rate. With this, we can easily create a "music" from a sequence of
+frequencies, each one played for a certain time.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+waveSequenceWithSampleRate :: SampleRate -> [(Hz,Seconds)] -> [Wave]
+waveSequenceWithSampleRate sr waves
+                         | null waves = []
+                         | otherwise  = wave freq dur sr : waveSequenceWithSampleRate sr rem
+                         where
+                           freq = fst $ head waves
+                           dur  = snd $ head waves
+                           rem  = tail waves
+#+end_src
+
+** Computing Tunes
+
+This was written by Mr. Kutepov. Computes the frequency that matches
+an arbitrary number of semitones away from a tune.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+semitonesFromTune :: Semitones -> Hz -> Hz
+semitonesFromTune n tune = tune * (2 ** (1.0 / 12.0)) ** n
+#+end_src
+
+And the following just returns the amount of semitones that a tone is
+from the standart pitch (A4).
+
+#+begin_src haskell :tangle TheNutcracker.hs
+matchToneName :: Tone -> Semitones
+matchToneName tone
+            | t == "A"               =        (pos - 4) * 12
+            | t == "A#" || t == "Bb" = 1    + (pos - 4) * 12
+            | t == "B"               = 2    + (pos - 4) * 12
+            | t == "C"               = (-9) + (pos - 4) * 12
+            | t == "C#" || t == "Db" = (-8) + (pos - 4) * 12
+            | t == "D"               = (-7) + (pos - 4) * 12
+            | t == "D#" || t == "Eb" = (-6) + (pos - 4) * 12
+            | t == "E"               = (-5) + (pos - 4) * 12
+            | t == "F"               = (-4) + (pos - 4) * 12
+            | t == "F#" || t == "Gb" = (-3) + (pos - 4) * 12
+            | t == "G"               = (-2) + (pos - 4) * 12
+            | t == "G#" || t == "Ab" = (-1) + (pos - 4) * 12
+            | otherwise = 0
+            where t   = fst tone
+                  pos = snd tone
+#+end_src
+
+Finally, given a list of pairs of semitones and seconds and a tune,
+this will compute the frequency of each each note in the sequence,
+returning a list ready to use by ~waveSequenceWithSampleRate~.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+tuneSequence :: Hz -> [(Semitones,Seconds)] -> [(Hz,Seconds)]
+tuneSequence tune notes
+           | null notes = []
+           | otherwise  = (semitonesFromTune n tune, secs) : tuneSequence tune rem
+           where n    = fst $ head notes
+                 secs = snd $ head notes
+                 rem  = tail notes
+#+end_src
+
+** Merging All Together
+
+We can merge all of that together in a function that applies the same
+volume and compression to a note list. We transform the sequence of
+pairs of semitones and seconds in a sequence of pairs of frequency and
+seconds, with a tune. Then, transforms that in a wave with a sample
+rate, and applies the desired volume and compression.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+quickMusic :: Volume -> Float -> SampleRate -> Hz -> Tone -> [(Semitones,Seconds)] -> Wave
+quickMusic vol comp sr tune tone notes =
+  concat $
+    mapApplyVolume vol $
+      mapApplyCompression comp $
+        waveSequenceWithSampleRate sr $ 
+          tuneSequence baseFreq notes
+  where baseFreq = semitonesFromTune (matchToneName tone) tune
+#+end_src
+
+** Listening
+
+The most straightforward way to actually listen to the generated
+sound, as used by Mr. Kutepov in the video: just save to a raw file
+readable by FFmpeg.
+
+#+begin_src haskell :tangle TheNutcracker.hs
+saveWaveToRawFile :: String -> Wave -> IO ()
+saveWaveToRawFile path wave = B.writeFile path $ B.toLazyByteString $ foldMap B.floatLE wave
+#+end_src
+
+To play it with FFmpeg showing the notes visually, use the following command:
+
+#+begin_src shell
+ffplay -loglevel quiet -showmode 1 -autoexit -f f32le -ar 48000 output.bin
+#+end_src
+
+* Example
+
+The following is an example of /Ode to Joy/, from the world-famous
+german composer Ludwig Van Beethoven. This movement feats his /Symphony
+No. 9/, maybe the most famous piece of music in the world. Also, it's
+the anthem of the European Union.
+
+This example generates the entire music, writes it in the file
+~output.bin~ and plays it with FFmpeg, showing the notes visually in a
+window.
+
+#+begin_src haskell :tangle Example.hs
+import TheNutcracker
+import System.Process
+
+play wave = do
+  saveWaveToRawFile "output.bin" wave
+  handler <- runCommand "ffplay -loglevel quiet -showmode 1 -autoexit -f f32le -ar 48000 output.bin"
+  waitForProcess handler
+
+sampleRate = 48000
+volume     = 1/2
+tune       = 440
+tone       = ("D", 4)
+
+music = [ (2,  1/2) -- init
+        , (2,  1/2)
+        , (3,  1/2)
+        , (5,  1/2)
+        , (5,  1/2)
+        , (3,  1/2)
+        , (2,  1/2)
+        , (0,  1/2)
+
+        , (-2, 1/2)
+        , (-2, 1/2)
+        , (0,  1/2)
+        , (2,  1/2)
+        , (2,  3/4)
+
+        , (0,  1/4)
+        , (0,  1)
+
+        , (2,  1/2) -- variation
+        , (2,  1/2)
+        , (3,  1/2)
+        , (5,  1/2)
+        , (5,  1/2)
+        , (3,  1/2)
+        , (2,  1/2)
+        , (0,  1/2)
+
+        , (-2, 1/2)
+        , (-2, 1/2)
+        , (0,  1/2)
+        , (2,  1/2)
+        , (0,  3/4)
+
+        , (-2, 1/4)
+        , (-2, 1)
+
+        , (0,  1/2) -- bridge
+        , (0,  1/2)
+        , (2,  1/2)
+        , (-2,  1/2)
+        , (0,  1/2)
+
+        , (2,  1/4)
+        , (3,  1/4)
+        , (2,  1/2)
+        , (-2,  1/2)
+        , (0,  1/2)
+
+        , (2,  1/4)
+        , (3,  1/4)
+        , (2,  1/2)
+        , (0,  1/2)
+        , (-2,  1/2)
+        , (0,  1/2)
+        , (-7,  1)
+
+        , (2,  1/2) -- variation
+        , (2,  1/2)
+        , (3,  1/2)
+        , (5,  1/2)
+        , (5,  1/2)
+        , (3,  1/2)
+        , (2,  1/2)
+        , (0,  1/2)
+
+        , (-2, 1/2)
+        , (-2, 1/2)
+        , (0,  1/2)
+        , (2,  1/2)
+        , (0,  3/4)
+
+        , (-2, 1/4)
+        , (-2, 1)
+
+        , (0,  1/2) -- bridge
+        , (0,  1/2)
+        , (2,  1/2)
+        , (-2,  1/2)
+        , (0,  1/2)
+
+        , (2,  1/4)
+        , (3,  1/4)
+        , (2,  1/2)
+        , (-2,  1/2)
+        , (0,  1/2)
+
+        , (2,  1/4)
+        , (3,  1/4)
+        , (2,  1/2)
+        , (0,  1/2)
+        , (-2,  1/2)
+        , (0,  1/2)
+        , (-7,  1)
+
+        , (2,  1/2) -- variation
+        , (2,  1/2)
+        , (3,  1/2)
+        , (5,  1/2)
+        , (5,  1/2)
+        , (3,  1/2)
+        , (2,  1/2)
+        , (0,  1/2)
+
+        , (-2, 1/2)
+        , (-2, 1/2)
+        , (0,  1/2)
+        , (2,  1/2)
+        , (0,  1)
+
+        , (-2, 1/4)
+        , (-2, 5/4)
+        ]
+
+main = do
+  play $ quickMusic volume 0.001 sampleRate tune tone music
+#+end_src
